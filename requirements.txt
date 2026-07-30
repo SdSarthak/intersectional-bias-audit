@@ -1,0 +1,8 @@
+# Core analysis stack
+numpy>=1.24,<3
+pandas>=2.0,<3
+scikit-learn>=1.2
+matplotlib>=3.7
+
+# Dataset download (only needed on the first run; see README for the manual route)
+ucimlrepo>=0.0.7
