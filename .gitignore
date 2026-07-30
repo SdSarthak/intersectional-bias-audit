@@ -1,0 +1,70 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+venv/
+env/
+.venv/
+.pytest_cache/
+.ipynb_checkpoints/
+.mypy_cache/
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+credentials.json
+serviceAccount*.json
+
+# Data & artifacts (see README for how to obtain the dataset)
+data/
+datasets/
+runs/
+logs/
+checkpoints/
+outputs/
+results/figures/
+*.h5
+*.pt
+*.pth
+*.pkl
+*.ckpt
+*.weights
+*.onnx
+*.tflite
+*.npz
+*.joblib
+
+# Media / archives
+*.mp4
+*.avi
+*.mov
+*.zip
+*.tar.gz
+*.tgz
+*.7z
+
+# Large reference material and generated exports (not source)
+*.doc
+*.docx
+*.html
+file.pdf
+file1.pdf
+Plagiarism Report.pdf
+
+# PDFs: only the paper itself is tracked
+*.pdf
+!Paper.pdf
+
+# Node / Flutter (not used here, kept for safety)
+node_modules/
+.dart_tool/
+
+# OS
+.DS_Store
+Thumbs.db
