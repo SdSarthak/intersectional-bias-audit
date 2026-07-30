@@ -7,13 +7,13 @@ import argparse
 import dataclasses
 import sys
 from pathlib import Path
-from typing import List, Optional, Sequence
+from typing import Optional, Sequence
 
 import numpy as np
 import pandas as pd
 
 from .config import DEFAULT_CONFIG, AuditConfig
-from .intersectional import IntersectionalAudit, audit_intersectional, masking_summary
+from .intersectional import IntersectionalAudit, masking_summary
 from .pipeline import RESULTS_FILENAME, run_audit, write_results
 from .report import build_report
 
