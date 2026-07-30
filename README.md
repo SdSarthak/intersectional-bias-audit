@@ -54,7 +54,8 @@ pip install -r requirements.txt          # runtime
 pip install -r requirements-dev.txt      # + pytest
 ```
 
-Python 3.9+.
+Python 3.9+. Installing the package instead (`pip install -e ".[dev]"`) also gives you a
+`bias-audit` command on the path.
 
 ## Getting the data
 
@@ -85,6 +86,9 @@ python -m bias_audit.cli report                 # rebuild the report from a save
 python -m bias_audit.cli figures                # re-render figures from a saved CSV
 python -m bias_audit.cli audit --help
 ```
+
+Or work through [`notebooks/intersectional_audit.ipynb`](notebooks/intersectional_audit.ipynb),
+which drives the same package step by step.
 
 As a library:
 
@@ -164,7 +168,7 @@ bias_audit/
   report.py          the written report
   pipeline.py        end-to-end run + result persistence
   cli.py             command line interface
-notebooks/           the original Colab notebooks (outputs stripped)
+notebooks/           intersectional_audit.ipynb (walkthrough) + the original Colab exports
 tests/               52 tests, no network or dataset needed
 results/             committed output of the run described above
 ```
