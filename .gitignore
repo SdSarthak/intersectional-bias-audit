@@ -28,7 +28,10 @@ runs/
 logs/
 checkpoints/
 outputs/
-results/figures/
+results/figures/*
+# keep the two headline figures the README links to
+!results/figures/heatmap_spd.png
+!results/figures/single_vs_intersectional_spd.png
 *.h5
 *.pt
 *.pth

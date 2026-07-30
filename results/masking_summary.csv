@@ -1,0 +1,4 @@
+attribute,metric,worst_single_group,worst_single_value,worst_intersectional_group,worst_intersectional_value,hidden_gap
+Age,spd,Young (<30),-0.20876373568419043,Male_Other_Young (<30),-0.3223232099312791,0.11355947424708868
+Gender,spd,Female,-0.18679400706968863,Female_Amer-Indian-Eskimo_Young (<30),-0.3223232099312791,0.13552920286159048
+Race,spd,Other,-0.1380350448493803,Male_Other_Young (<30),-0.3223232099312791,0.1842881650818988

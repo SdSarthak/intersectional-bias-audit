@@ -1,0 +1,78 @@
+==============================================================================
+INTERSECTIONAL FAIRNESS AUDIT - UCI ADULT INCOME PREDICTION
+==============================================================================
+
+Model performance on the held-out split
+------------------------------------------------------------------------------
+  Accuracy : 0.8468
+  Precision: 0.7293
+  Recall   : 0.5934
+  F1       : 0.6544
+  ROC AUC  : 0.9042
+
+Audit scope
+------------------------------------------------------------------------------
+  Privileged baseline      : Male_White_Middle-aged (30-50) (n=4511)
+  Baseline selection rate  : 0.3223
+  Intersectional subgroups : 30
+  Scored subgroups         : 27 (>= 10 samples)
+  Suppressed (small n)     : 3
+
+Fairness thresholds
+------------------------------------------------------------------------------
+  |SPD| <= 0.1    DIR >= 0.8 (four-fifths rule)    |EOD| <= 0.1
+  EOD is flagged unreliable below 10 positive labels in either group, since TPR is then estimated from a handful of rows.
+
+Headline finding
+------------------------------------------------------------------------------
+  22 of 27 scored subgroups breach the four-fifths rule (81%).
+  Lowest DIR : Male_Other_Young (<30) = 0.0000 (n=27)
+  Lowest SPD : Male_Other_Young (<30) = -0.3223 (n=27)
+  Lowest EOD : Male_White_Young (<30) = -0.2576 (n_positives=149, reliable subgroups only)
+
+Most disadvantaged subgroups (by SPD)
+------------------------------------------------------------------------------
+                  intersectional_group  n_samples  n_positives  selection_rate     spd    dir     eod  eod_reliable note
+Female_Asian-Pac-Islander_Senior (>50)         19            3          0.0000 -0.3223 0.0000 -0.6133         False     
+ Female_Amer-Indian-Eskimo_Young (<30)         21            1          0.0000 -0.3223 0.0000 -0.6133         False     
+   Male_Amer-Indian-Eskimo_Young (<30)         26            1          0.0000 -0.3223 0.0000 -0.6133         False     
+                Male_Other_Young (<30)         27            1          0.0000 -0.3223 0.0000 -0.6133         False     
+                Male_Black_Young (<30)        207            8          0.0242 -0.2982 0.0749 -0.2383         False     
+              Female_Black_Young (<30)        197            3          0.0254 -0.2969 0.0787  0.3867         False     
+              Female_White_Young (<30)       1406           53          0.0284 -0.2939 0.0883 -0.2171          True     
+   Male_Asian-Pac-Islander_Young (<30)         83            4          0.0361 -0.2862 0.1121 -0.1133         False     
+      Female_Black_Middle-aged (30-50)        327           28          0.0367 -0.2856 0.1139 -0.2204          True     
+             Female_Black_Senior (>50)        100            6          0.0500 -0.2723 0.1551  0.0534         False     
+
+Conventional single-attribute audit, same predictions
+------------------------------------------------------------------------------
+attribute              group  n_samples     spd    dir     eod note
+      Age        Young (<30)       4088 -0.2088 0.1637 -0.2090     
+      Age       Senior (>50)       2702  0.0542 1.2173  0.0791     
+   Gender             Female       4531 -0.1868 0.2805 -0.1411     
+     Race              Black       1279 -0.1273 0.4010 -0.0798     
+     Race Asian-Pac-Islander        428  0.0118 1.0555  0.0830     
+     Race Amer-Indian-Eskimo        151 -0.1264 0.4051 -0.0959     
+     Race              Other         94 -0.1380 0.3504 -0.3232     
+
+What the single-attribute view hides
+------------------------------------------------------------------------------
+  Age: worst single-attribute SPD is -0.2088 (Young (<30)), but the worst subgroup within it reaches -0.3223 (Male_Other_Young (<30)) - a hidden gap of 0.1136.
+  Gender: worst single-attribute SPD is -0.1868 (Female), but the worst subgroup within it reaches -0.3223 (Female_Amer-Indian-Eskimo_Young (<30)) - a hidden gap of 0.1355.
+  Race: worst single-attribute SPD is -0.1380 (Other), but the worst subgroup within it reaches -0.3223 (Male_Other_Young (<30)) - a hidden gap of 0.1843.
+
+Subgroups suppressed for small sample size (n < 10)
+------------------------------------------------------------------------------
+  Male_Other_Senior (>50) (n=7)
+  Female_Amer-Indian-Eskimo_Senior (>50) (n=7)
+  Female_Other_Senior (>50) (n=1)
+
+Recommendations
+------------------------------------------------------------------------------
+  1. Do not deploy as-is: 22 subgroups fail the four-fifths rule, worst being Female_Asian-Pac-Islander_Senior (>50), Female_Amer-Indian-Eskimo_Young (<30), Male_Amer-Indian-Eskimo_Young (<30).
+  2. Apply group-aware post-processing (per-subgroup thresholds or equalised odds) and re-audit at the intersectional level, not just per attribute.
+  3. Equal-opportunity gap of -0.2576 for Male_White_Young (<30) (n_positives=149): qualified members of this subgroup are being missed, which threshold tuning alone will not fix.
+  4. 3 subgroups are too small to audit (n < 10). Oversample them before claiming the model is fair for everyone.
+  5. Report intersectional metrics alongside the single-attribute ones; the marginal view averages away exactly the harms this audit surfaces.
+
+==============================================================================
