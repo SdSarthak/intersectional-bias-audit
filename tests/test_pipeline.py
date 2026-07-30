@@ -110,8 +110,9 @@ def test_results_table_has_the_documented_schema(raw_frame, config):
 
     expected = {
         "intersectional_group", "gender", "race", "age_group", "n_samples",
-        "selection_rate", "spd", "dir", "eod", "aod", "fpr_diff", "fnr_diff",
-        "spd_fair", "dir_fair", "eod_fair", "note",
+        "n_positives", "n_negatives", "selection_rate",
+        "spd", "dir", "eod", "aod", "fpr_diff", "fnr_diff",
+        "spd_fair", "dir_fair", "eod_fair", "eod_reliable", "fpr_reliable", "note",
     }
     assert set(run.audit.results.columns) == expected
 

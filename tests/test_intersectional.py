@@ -226,3 +226,39 @@ def test_single_attribute_audit_handles_a_missing_privileged_level():
     result = audit_single_attributes([1, 0] * 10, [1, 0] * 10, frame, DEFAULT_CONFIG)
     assert result.empty
     assert "attribute" in result.columns
+
+
+def test_eod_is_flagged_unreliable_when_positives_are_scarce():
+    """A subgroup can clear min_group_size yet have only a couple of positives.
+
+    That makes its TPR (and therefore EOD) noise, which the results table must
+    say out loud rather than reporting a confident-looking number.
+    """
+    rows = []
+
+    def add(label, n, n_approved, n_positive):
+        for i in range(n):
+            rows.append(
+                {
+                    "intersectional_group": label,
+                    "y_pred": 1 if i < n_approved else 0,
+                    "y_true": 1 if i < n_positive else 0,
+                }
+            )
+
+    add(PRIVILEGED, 200, 100, 100)
+    add("Female_Black_Young (<30)", 60, 3, 2)  # only 2 positive labels
+
+    frame = pd.DataFrame(rows)
+    audit = audit_intersectional(frame["y_true"], frame["y_pred"], frame["intersectional_group"])
+    row = audit.results.set_index("intersectional_group").loc["Female_Black_Young (<30)"]
+
+    assert row["n_positives"] == 2
+    assert row["n_negatives"] == 58
+    assert bool(row["eod_reliable"]) is False   # 2 positives < min_positive_count
+    assert bool(row["fpr_reliable"]) is True    # 58 negatives is plenty
+    # SPD only needs the group size, so it stays trustworthy.
+    assert row["spd"] == pytest.approx(0.05 - 0.50)
+
+    assert "Female_Black_Young (<30)" not in set(audit.reliable("eod")["intersectional_group"])
+    assert "Female_Black_Young (<30)" in set(audit.reliable("spd")["intersectional_group"])

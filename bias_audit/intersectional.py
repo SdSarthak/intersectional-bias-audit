@@ -33,6 +33,8 @@ RESULT_COLUMNS = [
     "race",
     "age_group",
     "n_samples",
+    "n_positives",
+    "n_negatives",
     "selection_rate",
     "spd",
     "dir",
@@ -43,6 +45,8 @@ RESULT_COLUMNS = [
     "spd_fair",
     "dir_fair",
     "eod_fair",
+    "eod_reliable",
+    "fpr_reliable",
     "note",
 ]
 
@@ -70,6 +74,19 @@ class IntersectionalAudit:
         """Groups whose disparate impact ratio breaches the 0.8 legal floor."""
         evaluated = self.results[self.results["note"] != SMALL_SAMPLE_NOTE]
         return evaluated[~evaluated["dir_fair"].astype(bool)]
+
+    def reliable(self, metric: str = "eod") -> pd.DataFrame:
+        """Scored groups whose *metric* rests on enough conditioning rows.
+
+        ``spd`` and ``dir`` only need the group to be large enough; ``eod`` and
+        the FNR gap additionally need positive labels, and the FPR gap needs
+        negative ones.
+        """
+        evaluated = self.results[self.results["note"] != SMALL_SAMPLE_NOTE]
+        flag = {"eod": "eod_reliable", "fnr_diff": "eod_reliable", "fpr_diff": "fpr_reliable"}.get(metric)
+        if flag is None or flag not in evaluated.columns:
+            return evaluated
+        return evaluated[evaluated[flag].astype(bool)]
 
 
 def build_group_labels(protected: pd.DataFrame, config: AuditConfig = DEFAULT_CONFIG) -> pd.Series:
@@ -155,13 +172,16 @@ def audit_intersectional(
     for label, group_frame in frame.groupby("intersectional_group", sort=False):
         parts = split_group_label(label)
         n_samples = len(group_frame)
+        own_rates = group_rates(group_frame["y_true"], group_frame["y_pred"])
         row = {
             "intersectional_group": label,
             "gender": parts["Gender"],
             "race": parts["Race"],
             "age_group": parts["Age"],
             "n_samples": n_samples,
-            "selection_rate": float(np.mean(group_frame["y_pred"].values == 1)),
+            "n_positives": own_rates.n_positives,
+            "n_negatives": own_rates.n_negatives,
+            "selection_rate": own_rates.selection_rate,
         }
 
         if label == baseline:
@@ -175,6 +195,8 @@ def audit_intersectional(
                 spd_fair=True,
                 dir_fair=True,
                 eod_fair=True,
+                eod_reliable=own_rates.n_positives >= config.min_positive_count,
+                fpr_reliable=own_rates.n_negatives >= config.min_positive_count,
                 note=PRIVILEGED_NOTE,
             )
         elif n_samples < config.min_group_size or privileged_rates.n_samples < config.min_group_size:
@@ -188,6 +210,8 @@ def audit_intersectional(
                 spd_fair=False,
                 dir_fair=False,
                 eod_fair=False,
+                eod_reliable=False,
+                fpr_reliable=False,
                 note=SMALL_SAMPLE_NOTE,
             )
         else:
@@ -197,7 +221,7 @@ def audit_intersectional(
                 group_frame["y_true"],
                 group_frame["y_pred"],
             )
-            row.update(_comparison_row(comparison, thresholds))
+            row.update(_comparison_row(comparison, thresholds, config.min_positive_count))
             row["note"] = ""
 
         rows.append(row)
@@ -217,9 +241,19 @@ def audit_intersectional(
     )
 
 
-def _comparison_row(comparison: GroupComparison, thresholds) -> dict:
-    """Metric values plus their pass/fail verdicts."""
+def _comparison_row(comparison: GroupComparison, thresholds, min_positive_count: int = 0) -> dict:
+    """Metric values, their pass/fail verdicts, and reliability flags.
+
+    ``eod_reliable`` / ``fpr_reliable`` mark whether enough rows entered the
+    conditional rate: a subgroup can clear the overall size threshold while
+    having only a couple of positive labels, which makes its TPR (and therefore
+    EOD) essentially noise.
+    """
+    unprivileged = comparison.unprivileged
+    privileged = comparison.privileged
     return {
+        "n_positives": unprivileged.n_positives,
+        "n_negatives": unprivileged.n_negatives,
         "spd": comparison.statistical_parity_difference,
         "dir": comparison.disparate_impact_ratio,
         "eod": comparison.equal_opportunity_difference,
@@ -229,6 +263,8 @@ def _comparison_row(comparison: GroupComparison, thresholds) -> dict:
         "spd_fair": thresholds.spd_is_fair(comparison.statistical_parity_difference),
         "dir_fair": thresholds.dir_is_fair(comparison.disparate_impact_ratio),
         "eod_fair": thresholds.eod_is_fair(comparison.equal_opportunity_difference),
+        "eod_reliable": min(unprivileged.n_positives, privileged.n_positives) >= min_positive_count,
+        "fpr_reliable": min(unprivileged.n_negatives, privileged.n_negatives) >= min_positive_count,
     }
 
 
@@ -287,20 +323,22 @@ def audit_single_attributes(
             }
             if comparison is None:
                 row.update(
+                    n_positives=0, n_negatives=0,
                     spd=np.nan, dir=np.nan, eod=np.nan, aod=np.nan,
                     fpr_diff=np.nan, fnr_diff=np.nan,
                     spd_fair=False, dir_fair=False, eod_fair=False,
+                    eod_reliable=False, fpr_reliable=False,
                     note=SMALL_SAMPLE_NOTE,
                 )
             else:
-                row.update(_comparison_row(comparison, thresholds))
+                row.update(_comparison_row(comparison, thresholds, config.min_positive_count))
                 row["note"] = ""
             rows.append(row)
 
     columns = [
-        "attribute", "group", "privileged_group", "n_samples",
+        "attribute", "group", "privileged_group", "n_samples", "n_positives", "n_negatives",
         "spd", "dir", "eod", "aod", "fpr_diff", "fnr_diff",
-        "spd_fair", "dir_fair", "eod_fair", "note",
+        "spd_fair", "dir_fair", "eod_fair", "eod_reliable", "fpr_reliable", "note",
     ]
     if not rows:
         return pd.DataFrame(columns=columns)

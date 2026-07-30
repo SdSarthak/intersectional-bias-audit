@@ -103,6 +103,11 @@ class AuditConfig:
 
     # --- intersectional analysis --------------------------------------
     min_group_size: int = 10
+    # TPR/FPR-based metrics (EOD, FNR/FPR gaps) are conditioned on the positive
+    # or negative rows of a subgroup, which can be a handful even when the
+    # subgroup itself clears min_group_size. Below this many conditioning rows
+    # the value is still reported but flagged unreliable.
+    min_positive_count: int = 10
     small_sample_annotation: int = 50
 
     # --- outputs -------------------------------------------------------

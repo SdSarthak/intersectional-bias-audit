@@ -33,7 +33,10 @@ def _fmt(value, spec: str = ".4f") -> str:
 
 def format_results_table(results: pd.DataFrame, limit: Optional[int] = None) -> str:
     """Render the intersectional results as a fixed-width table."""
-    columns = ["intersectional_group", "n_samples", "selection_rate", "spd", "dir", "eod", "fnr_diff", "note"]
+    columns = [
+        "intersectional_group", "n_samples", "n_positives",
+        "selection_rate", "spd", "dir", "eod", "eod_reliable", "note",
+    ]
     available = [c for c in columns if c in results.columns]
     frame = results[available]
     if limit is not None:
@@ -81,6 +84,10 @@ def build_report(
     lines.append("-" * 78)
     lines.append(f"  |SPD| <= {thresholds.spd_tolerance}    DIR >= {thresholds.dir_minimum} (four-fifths rule)"
                  f"    |EOD| <= {thresholds.eod_tolerance}")
+    lines.append(
+        f"  EOD is flagged unreliable below {config.min_positive_count} positive labels in either group, "
+        "since TPR is then estimated from a handful of rows."
+    )
 
     failing = audit.failing_four_fifths()
     lines.append("")
@@ -103,6 +110,13 @@ def build_report(
             f"  Lowest SPD : {worst_spd['intersectional_group']} = {_fmt(worst_spd['spd'])} "
             f"(n={int(worst_spd['n_samples'])})"
         )
+        reliable_eod = audit.reliable("eod")
+        if not reliable_eod.empty and reliable_eod["eod"].notna().any():
+            worst_eod = reliable_eod.loc[reliable_eod["eod"].idxmin()]
+            lines.append(
+                f"  Lowest EOD : {worst_eod['intersectional_group']} = {_fmt(worst_eod['eod'])} "
+                f"(n_positives={int(worst_eod['n_positives'])}, reliable subgroups only)"
+            )
 
     lines.append("")
     lines.append("Most disadvantaged subgroups (by SPD)")
@@ -168,12 +182,16 @@ def _recommendations(audit: IntersectionalAudit, config: AuditConfig) -> List[st
     else:
         lines.append("  1. No scored subgroup breaches the four-fifths rule; keep monitoring after retraining.")
 
-    worst_eod = evaluated.loc[evaluated["eod"].idxmin()] if evaluated["eod"].notna().any() else None
-    if worst_eod is not None and not config.thresholds.eod_is_fair(worst_eod["eod"]):
-        lines.append(
-            f"  3. Equal-opportunity gap of {_fmt(worst_eod['eod'])} for {worst_eod['intersectional_group']}: "
-            "qualified members of this subgroup are being missed, which threshold tuning alone will not fix."
-        )
+    reliable_eod = audit.reliable("eod")
+    if not reliable_eod.empty and reliable_eod["eod"].notna().any():
+        worst_eod = reliable_eod.loc[reliable_eod["eod"].idxmin()]
+        if not config.thresholds.eod_is_fair(worst_eod["eod"]):
+            lines.append(
+                f"  3. Equal-opportunity gap of {_fmt(worst_eod['eod'])} for "
+                f"{worst_eod['intersectional_group']} (n_positives={int(worst_eod['n_positives'])}): "
+                "qualified members of this subgroup are being missed, which threshold tuning alone "
+                "will not fix."
+            )
 
     if not suppressed.empty:
         lines.append(
