@@ -18,21 +18,21 @@ From the run committed in [`results/`](results/) (logistic regression, 30% held-
 
 | | |
 |---|---|
-| Model accuracy / ROC AUC | 0.847 / 0.904 |
-| Populated intersectional subgroups | 30 |
+| Model accuracy / ROC AUC | 0.844 / 0.902 |
+| Populated intersectional subgroups | 29 |
 | Subgroups large enough to score (n ≥ 10) | 27 |
 | **Subgroups breaching the four-fifths rule** | **22 of 27 (81%)** |
 | Worst DIR | `Male_Other_Young (<30)` = 0.000 |
-| Worst SPD | `Male_Other_Young (<30)` = −0.322 |
-| Privileged baseline selection rate | 0.322 |
+| Worst SPD | `Male_Other_Young (<30)` = −0.317 |
+| Privileged baseline selection rate | 0.317 |
 
 The masking effect the paper argues for, measured on the same predictions:
 
 | Attribute | Worst *single-attribute* SPD | Worst SPD inside that group | Hidden gap |
 |---|---|---|---|
-| Race | −0.138 (`Other`) | −0.322 (`Male_Other_Young (<30)`) | **0.184** |
-| Gender | −0.187 (`Female`) | −0.322 (`Female_Amer-Indian-Eskimo_Young (<30)`) | **0.136** |
-| Age | −0.209 (`Young (<30)`) | −0.322 (`Male_Other_Young (<30)`) | **0.114** |
+| Race | −0.142 (`Other`) | −0.317 (`Male_Other_Young (<30)`) | **0.175** |
+| Gender | −0.185 (`Female`) | −0.317 (`Female_Asian-Pac-Islander_Senior (>50)`) | **0.133** |
+| Age | −0.208 (`Young (<30)`) | −0.317 (`Male_Other_Young (<30)`) | **0.109** |
 
 A conventional gender audit reports a −0.19 parity gap. The worst-off subgroup of women sits at
 −0.32 — nearly twice as bad, and invisible to that audit.
@@ -187,10 +187,16 @@ reproduces the paper's central claim on controlled data.
 
 ## Notes on reproducing the paper
 
-* The paper reports **29** populated subgroups; this run finds **30**. The difference is an
-  age-binning fix: `pandas.cut` closes intervals on the right, so the original edges
-  `[0, 30, 50, 150]` put every 30-year-old in the `Young (<30)` band, contradicting the band's own
-  label. The edges are now `[0, 29, 50, 150]`, giving `<30 / 30–50 / >50` as written.
+* This run keeps **45,222** of the 48,842 raw rows. The published files mark a missing value with
+  `?`, but the `ucimlrepo` download returns some of the same fields as a true `NaN`, so both forms
+  have to be recognised. An earlier version of the cleaner stringified the frame before filtering,
+  which turned those `NaN`s into the literal category `"nan"` and kept about 2,400 rows that the
+  documented rule ("drop rows with missing values") says to drop — one-hot encoding
+  `workclass_nan` as if it were a kind of employer.
+* The age binning is fixed relative to the paper: `pandas.cut` closes intervals on the right, so
+  the original edges `[0, 30, 50, 150]` put every 30-year-old in the `Young (<30)` band,
+  contradicting the band's own label. The edges are now `[0, 29, 50, 150]`, giving
+  `<30 / 30–50 / >50` as written.
 * The paper's baseline selection rate was 0.11, versus 0.32 here. The notebook rebuilt its
   protected-attribute arrays by hand after several `reset_index` calls, and the demographics drifted
   out of alignment with the predictions. `prepare_data` now carries the protected attributes through
