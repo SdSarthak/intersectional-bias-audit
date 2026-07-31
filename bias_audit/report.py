@@ -31,6 +31,20 @@ def _fmt(value, spec: str = ".4f") -> str:
         return str(value)
 
 
+def _idxmin_row(frame: pd.DataFrame, column: str):
+    """Row with the smallest *column*, or ``None`` when every value is missing.
+
+    ``Series.idxmin`` raises on an all-NaN column, which is reachable whenever a
+    saved results table is replayed through ``bias-audit report``.
+    """
+    if column not in frame.columns:
+        return None
+    values = pd.to_numeric(frame[column], errors="coerce")
+    if values.notna().sum() == 0:
+        return None
+    return frame.loc[values.idxmin()]
+
+
 def format_results_table(results: pd.DataFrame, limit: Optional[int] = None) -> str:
     """Render the intersectional results as a fixed-width table."""
     columns = [
@@ -90,29 +104,37 @@ def build_report(
     )
 
     failing = audit.failing_four_fifths()
+    undefined = audit.undefined_ratio()
+    scorable = max(audit.n_evaluated - len(undefined), 0)
     lines.append("")
     lines.append("Headline finding")
     lines.append("-" * 78)
     if evaluated.empty:
         lines.append("  No subgroup was large enough to score.")
     else:
-        worst_dir = evaluated.loc[evaluated["dir"].idxmin()]
-        worst_spd = evaluated.loc[evaluated["spd"].idxmin()]
         lines.append(
-            f"  {len(failing)} of {audit.n_evaluated} scored subgroups breach the four-fifths rule "
-            f"({100 * len(failing) / max(audit.n_evaluated, 1):.0f}%)."
+            f"  {len(failing)} of {scorable} subgroups with a defined ratio breach the "
+            f"four-fifths rule ({100 * len(failing) / max(scorable, 1):.0f}%)."
         )
-        lines.append(
-            f"  Lowest DIR : {worst_dir['intersectional_group']} = {_fmt(worst_dir['dir'])} "
-            f"(n={int(worst_dir['n_samples'])})"
-        )
-        lines.append(
-            f"  Lowest SPD : {worst_spd['intersectional_group']} = {_fmt(worst_spd['spd'])} "
-            f"(n={int(worst_spd['n_samples'])})"
-        )
-        reliable_eod = audit.reliable("eod")
-        if not reliable_eod.empty and reliable_eod["eod"].notna().any():
-            worst_eod = reliable_eod.loc[reliable_eod["eod"].idxmin()]
+        if len(undefined):
+            lines.append(
+                f"  {len(undefined)} further subgroups have an undefined ratio (the baseline "
+                "selection rate was zero) and are neither passed nor failed."
+            )
+        worst_dir = _idxmin_row(evaluated, "dir")
+        worst_spd = _idxmin_row(evaluated, "spd")
+        if worst_dir is not None:
+            lines.append(
+                f"  Lowest DIR : {worst_dir['intersectional_group']} = {_fmt(worst_dir['dir'])} "
+                f"(n={int(worst_dir['n_samples'])})"
+            )
+        if worst_spd is not None:
+            lines.append(
+                f"  Lowest SPD : {worst_spd['intersectional_group']} = {_fmt(worst_spd['spd'])} "
+                f"(n={int(worst_spd['n_samples'])})"
+            )
+        worst_eod = _idxmin_row(audit.reliable("eod"), "eod")
+        if worst_eod is not None:
             lines.append(
                 f"  Lowest EOD : {worst_eod['intersectional_group']} = {_fmt(worst_eod['eod'])} "
                 f"(n_positives={int(worst_eod['n_positives'])}, reliable subgroups only)"
@@ -182,9 +204,8 @@ def _recommendations(audit: IntersectionalAudit, config: AuditConfig) -> List[st
     else:
         lines.append("  1. No scored subgroup breaches the four-fifths rule; keep monitoring after retraining.")
 
-    reliable_eod = audit.reliable("eod")
-    if not reliable_eod.empty and reliable_eod["eod"].notna().any():
-        worst_eod = reliable_eod.loc[reliable_eod["eod"].idxmin()]
+    worst_eod = _idxmin_row(audit.reliable("eod"), "eod")
+    if worst_eod is not None:
         if not config.thresholds.eod_is_fair(worst_eod["eod"]):
             lines.append(
                 f"  3. Equal-opportunity gap of {_fmt(worst_eod['eod'])} for "

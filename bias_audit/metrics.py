@@ -281,6 +281,11 @@ def rates_by_group(
     truth = _to_array(y_true)
     predictions = _to_array(y_pred)
     groups = _to_array(protected)
+    if not (truth.size == predictions.size == groups.size):
+        raise ValueError(
+            "y_true, y_pred and protected must be the same length, got "
+            f"{truth.size}, {predictions.size}, {groups.size}"
+        )
 
     summaries = {}
     for value in np.unique(groups):
@@ -306,6 +311,11 @@ def pairwise_comparisons(
     truth = _to_array(y_true)
     predictions = _to_array(y_pred)
     groups = _to_array(protected)
+    if not (truth.size == predictions.size == groups.size):
+        raise ValueError(
+            "y_true, y_pred and protected must be the same length, got "
+            f"{truth.size}, {predictions.size}, {groups.size}"
+        )
 
     privileged_mask = groups == privileged_value
     if not privileged_mask.any():

@@ -8,6 +8,7 @@ every populated combination surfaces it.
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Optional
 
@@ -53,6 +54,30 @@ RESULT_COLUMNS = [
 SMALL_SAMPLE_NOTE = "small_sample"
 PRIVILEGED_NOTE = "privileged_baseline"
 
+# Strings a CSV round-trip can leave behind where a boolean was written.
+_FALSE_STRINGS = {"false", "f", "0", "no", "nan", "none", ""}
+
+
+def _truthy(series: pd.Series) -> pd.Series:
+    """Interpret a flag column as booleans, tolerating a CSV round-trip.
+
+    ``DataFrame.astype(bool)`` maps the *strings* ``"False"`` and ``"nan"`` to
+    ``True``, which silently inverts a verdict whenever a results table is read
+    back from disk with an object-dtype flag column (any NaN in the column is
+    enough to make pandas choose object dtype).
+    """
+    if series.dtype == bool:
+        return series
+
+    def _one(value) -> bool:
+        if isinstance(value, str):
+            return value.strip().lower() not in _FALSE_STRINGS
+        if value is None or (isinstance(value, float) and np.isnan(value)):
+            return False
+        return bool(value)
+
+    return series.map(_one).astype(bool)
+
 
 @dataclass
 class IntersectionalAudit:
@@ -65,15 +90,35 @@ class IntersectionalAudit:
     n_groups: int
     n_evaluated: int
 
+    def evaluated(self) -> pd.DataFrame:
+        """Rows whose metrics were actually computed (not suppressed for size)."""
+        return self.results[self.results["note"] != SMALL_SAMPLE_NOTE]
+
     def worst(self, metric: str = "spd", k: int = 10) -> pd.DataFrame:
         """The *k* most disadvantaged evaluated groups by *metric* (lowest first)."""
-        evaluated = self.results[self.results["note"] != SMALL_SAMPLE_NOTE]
+        evaluated = self.evaluated()
+        if metric not in evaluated.columns:
+            raise KeyError(f"No {metric!r} column in the results table; have {list(evaluated.columns)}")
+        if k <= 0:
+            raise ValueError(f"k must be positive, got {k}")
         return evaluated.sort_values(metric, ascending=True, na_position="last").head(k)
 
     def failing_four_fifths(self) -> pd.DataFrame:
-        """Groups whose disparate impact ratio breaches the 0.8 legal floor."""
-        evaluated = self.results[self.results["note"] != SMALL_SAMPLE_NOTE]
-        return evaluated[~evaluated["dir_fair"].astype(bool)]
+        """Groups whose disparate impact ratio breaches the 0.8 legal floor.
+
+        A group whose ratio is *undefined* (the privileged selection rate was
+        zero, so DIR is NaN) is not a breach — it is unknown. Treating NaN as a
+        failure, as the ``dir_fair`` flag alone does, reports a subgroup with a
+        *higher* selection rate than the baseline as failing the rule.
+        """
+        evaluated = self.evaluated()
+        defined = pd.to_numeric(evaluated["dir"], errors="coerce").notna()
+        return evaluated[defined & ~_truthy(evaluated["dir_fair"])]
+
+    def undefined_ratio(self) -> pd.DataFrame:
+        """Scored groups whose disparate impact ratio could not be computed."""
+        evaluated = self.evaluated()
+        return evaluated[pd.to_numeric(evaluated["dir"], errors="coerce").isna()]
 
     def reliable(self, metric: str = "eod") -> pd.DataFrame:
         """Scored groups whose *metric* rests on enough conditioning rows.
@@ -82,24 +127,57 @@ class IntersectionalAudit:
         the FNR gap additionally need positive labels, and the FPR gap needs
         negative ones.
         """
-        evaluated = self.results[self.results["note"] != SMALL_SAMPLE_NOTE]
+        evaluated = self.evaluated()
         flag = {"eod": "eod_reliable", "fnr_diff": "eod_reliable", "fpr_diff": "fpr_reliable"}.get(metric)
         if flag is None or flag not in evaluated.columns:
             return evaluated
-        return evaluated[evaluated[flag].astype(bool)]
+        return evaluated[_truthy(evaluated[flag])]
+
+
+def _is_missing(value) -> bool:
+    """True for NaN/None and for the string forms a CSV round-trip produces."""
+    if value is None:
+        return True
+    try:
+        if pd.isna(value):
+            return True
+    except (TypeError, ValueError):  # arrays / unhashable values are never scalars here
+        return False
+    return isinstance(value, str) and value.strip().lower() in {"", "nan", "none", "?"}
 
 
 def build_group_labels(protected: pd.DataFrame, config: AuditConfig = DEFAULT_CONFIG) -> pd.Series:
-    """Combine sex, race and age band into one ``Gender_Race_Age`` label."""
+    """Combine sex, race and age band into one ``Gender_Race_Age`` label.
+
+    Rows where any of the three attributes is missing get a ``NaN`` label rather
+    than a label containing the literal text ``nan``. An age outside
+    ``config.age_bins`` (a data-entry error such as 200, or a non-numeric value)
+    falls out of :func:`bias_audit.data.add_age_group` as NaN, and pasting that
+    into the label invented an ``Age = nan`` band that then appeared in the
+    results table, the heatmap and the single-attribute audit as if it were a
+    real demographic group.
+    """
     missing = [c for c in ("sex", "race", "age_group") if c not in protected.columns]
     if missing:
         raise ValueError(f"Protected frame is missing columns: {missing}")
 
     labels = [
-        join_group_label(sex, race, age)
+        np.nan
+        if _is_missing(sex) or _is_missing(race) or _is_missing(age)
+        else join_group_label(sex, race, age)
         for sex, race, age in zip(protected["sex"], protected["race"], protected["age_group"])
     ]
-    return pd.Series(labels, index=protected.index, name="intersectional_group")
+    series = pd.Series(labels, index=protected.index, name="intersectional_group", dtype="object")
+
+    n_missing = int(series.isna().sum())
+    if n_missing:
+        warnings.warn(
+            f"{n_missing} of {len(series)} rows have an incomplete protected-attribute "
+            "triple and cannot be assigned to an intersectional subgroup; they are "
+            "excluded from the audit.",
+            stacklevel=2,
+        )
+    return series
 
 
 def resolve_privileged_group(
@@ -111,15 +189,23 @@ def resolve_privileged_group(
     present. If a differently-labelled dataset is supplied, the largest group
     is a defensible substitute and the caller is told which one was chosen.
     """
-    series = pd.Series(list(labels), dtype="object")
-    preferred = config.privileged_intersectional_group
-    present = set(series.unique())
+    series = pd.Series(list(labels), dtype="object").dropna()
+    if series.empty:
+        raise ValueError("Cannot resolve a privileged group from an empty label set")
 
-    if preferred in present:
+    preferred = config.privileged_intersectional_group
+    # Ordered by frequency so the choice is reproducible: iterating a ``set``
+    # made the fallback depend on string hash randomisation, i.e. on the
+    # process, which is fatal for a result a paper quotes.
+    counts = series.value_counts()
+    if preferred in counts.index:
         return preferred
 
-    for candidate in present:
-        parts = split_group_label(candidate)
+    for candidate in counts.index:
+        try:
+            parts = split_group_label(candidate)
+        except ValueError:
+            continue  # a label that is not a three-part triple cannot be the baseline
         if (
             parts["Gender"] == config.privileged_sex
             and parts["Race"] == config.privileged_race
@@ -127,9 +213,7 @@ def resolve_privileged_group(
         ):
             return candidate
 
-    if series.empty:
-        raise ValueError("Cannot resolve a privileged group from an empty label set")
-    return str(series.value_counts().idxmax())
+    return str(counts.idxmax())
 
 
 def audit_intersectional(
@@ -156,9 +240,20 @@ def audit_intersectional(
             f"{len(truth)}, {len(predicted)}, {len(labels)}"
         )
 
-    frame = pd.DataFrame({"y_true": truth, "y_pred": predicted, "intersectional_group": labels}).dropna()
+    frame = pd.DataFrame({"y_true": truth, "y_pred": predicted, "intersectional_group": labels})
+    n_input = len(frame)
+    frame = frame.dropna().reset_index(drop=True)
     if frame.empty:
-        raise ValueError("No rows left to audit after dropping missing values")
+        raise ValueError(
+            f"No rows left to audit: all {n_input} rows had a missing label, prediction "
+            "or group assignment."
+        )
+    if len(frame) < n_input:
+        warnings.warn(
+            f"Dropped {n_input - len(frame)} of {n_input} rows with a missing label, "
+            "prediction or intersectional group before auditing.",
+            stacklevel=2,
+        )
 
     baseline = privileged_group or resolve_privileged_group(frame["intersectional_group"], config=config)
     privileged_rows = frame[frame["intersectional_group"] == baseline]
@@ -229,7 +324,15 @@ def audit_intersectional(
     results = pd.DataFrame(rows, columns=RESULT_COLUMNS)
     results = results.sort_values("n_samples", ascending=False).reset_index(drop=True)
 
-    single = audit_single_attributes(frame["y_true"], frame["y_pred"], _protected_from_labels(labels), config)
+    # The protected frame must be derived from the *surviving* rows: deriving it
+    # from the pre-dropna labels made the single-attribute audit index a shorter
+    # array with a longer mask as soon as a single row was dropped.
+    single = audit_single_attributes(
+        frame["y_true"],
+        frame["y_pred"],
+        _protected_from_labels(frame["intersectional_group"]),
+        config,
+    )
 
     return IntersectionalAudit(
         results=results,
@@ -295,6 +398,11 @@ def audit_single_attributes(
     truth = pd.Series(np.asarray(getattr(y_true, "values", y_true)).reshape(-1)).reset_index(drop=True)
     predicted = pd.Series(np.asarray(getattr(y_pred, "values", y_pred)).reshape(-1)).reset_index(drop=True)
     attributes = protected.reset_index(drop=True)
+    if not (len(truth) == len(predicted) == len(attributes)):
+        raise ValueError(
+            "y_true, y_pred and protected must be the same length, got "
+            f"{len(truth)}, {len(predicted)}, {len(attributes)}"
+        )
     thresholds = config.thresholds
 
     specs = [
