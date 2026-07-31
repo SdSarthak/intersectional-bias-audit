@@ -19,6 +19,14 @@ PACKAGE_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = PACKAGE_DIR.parent
 
 
+class ConfigError(ValueError):
+    """Raised when a configuration value cannot produce a meaningful audit."""
+
+
+class DataError(ValueError):
+    """Raised when the input data cannot support an audit."""
+
+
 def _env_path(name: str, default: Path) -> Path:
     """Read a path from the environment, falling back to *default*."""
     raw = os.environ.get(name)
@@ -132,6 +140,66 @@ class AuditConfig:
         """Create the data/results/figures directories if they do not exist."""
         for path in (self.data_dir, self.results_dir, self.figures_dir):
             path.mkdir(parents=True, exist_ok=True)
+
+    def validate(self) -> "AuditConfig":
+        """Reject settings that would fail deep inside scikit-learn or pandas.
+
+        Without this a ``--test-size 1.5`` surfaces as a scikit-learn
+        ``InvalidParameterError`` several calls into the pipeline, and a
+        ``--min-group-size 0`` does not fail at all: it silently scores
+        one-person subgroups and publishes a disparate impact ratio derived
+        from a single prediction.
+        """
+        problems = []
+
+        if not 0.0 < float(self.test_size) < 1.0:
+            problems.append(f"test_size must be strictly between 0 and 1, got {self.test_size}")
+        if not 0.0 <= float(self.decision_threshold) <= 1.0:
+            problems.append(f"decision_threshold must be in [0, 1], got {self.decision_threshold}")
+        if float(self.regularization_C) <= 0:
+            problems.append(f"regularization_C must be positive, got {self.regularization_C}")
+        if int(self.max_iter) <= 0:
+            problems.append(f"max_iter must be positive, got {self.max_iter}")
+        if int(self.min_group_size) < 2:
+            problems.append(
+                f"min_group_size must be at least 2, got {self.min_group_size}; "
+                "a rate estimated from a single row is not a measurement"
+            )
+        if int(self.min_positive_count) < 1:
+            problems.append(f"min_positive_count must be at least 1, got {self.min_positive_count}")
+
+        bins = list(self.age_bins)
+        labels = list(self.age_labels)
+        if len(bins) < 2:
+            problems.append(f"age_bins needs at least two edges, got {bins}")
+        elif any(b >= a for b, a in zip(bins, bins[1:])):
+            problems.append(f"age_bins must be strictly increasing, got {bins}")
+        elif len(labels) != len(bins) - 1:
+            problems.append(
+                f"age_labels must have one entry per bin: {len(bins) - 1} bins but {len(labels)} labels"
+            )
+        elif len(set(labels)) != len(labels):
+            problems.append(f"age_labels must be unique, got {labels}")
+
+        if self.privileged_age_group not in labels:
+            problems.append(
+                f"privileged_age_group {self.privileged_age_group!r} is not one of the age labels {labels}"
+            )
+
+        for name, value in (
+            ("spd_tolerance", self.thresholds.spd_tolerance),
+            ("eod_tolerance", self.thresholds.eod_tolerance),
+            ("fpr_tolerance", self.thresholds.fpr_tolerance),
+            ("fnr_tolerance", self.thresholds.fnr_tolerance),
+        ):
+            if not 0.0 <= float(value) <= 1.0:
+                problems.append(f"{name} must be in [0, 1], got {value}")
+        if not 0.0 < float(self.thresholds.dir_minimum) <= 1.0:
+            problems.append(f"dir_minimum must be in (0, 1], got {self.thresholds.dir_minimum}")
+
+        if problems:
+            raise ConfigError("Invalid audit configuration:\n  - " + "\n  - ".join(problems))
+        return self
 
 
 GROUP_SEPARATOR = "_"

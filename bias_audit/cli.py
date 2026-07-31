@@ -12,8 +12,8 @@ from typing import Optional, Sequence
 import numpy as np
 import pandas as pd
 
-from .config import DEFAULT_CONFIG, AuditConfig
-from .intersectional import IntersectionalAudit, masking_summary
+from .config import DEFAULT_CONFIG, AuditConfig, ConfigError, DataError
+from .intersectional import RESULT_COLUMNS, IntersectionalAudit, masking_summary
 from .pipeline import RESULTS_FILENAME, run_audit, write_results
 from .report import build_report
 
@@ -89,13 +89,34 @@ def _config_from_args(args: argparse.Namespace) -> AuditConfig:
     return dataclasses.replace(DEFAULT_CONFIG, **overrides) if overrides else DEFAULT_CONFIG
 
 
+# Without these the report and the figures raise a bare KeyError on a truncated
+# or hand-edited results table.
+REQUIRED_RESULT_COLUMNS = ("intersectional_group", "gender", "race", "age_group", "n_samples", "spd", "dir")
+
+
 def _load_results(path: Path) -> pd.DataFrame:
     if not path.exists():
         raise SystemExit(f"No results file at {path}. Run `python -m bias_audit.cli audit` first.")
-    frame = pd.read_csv(path)
+    try:
+        frame = pd.read_csv(path)
+    except pd.errors.EmptyDataError:
+        raise SystemExit(f"{path} is empty. Re-run `bias-audit audit` to regenerate it.")
+    except pd.errors.ParserError as exc:
+        raise SystemExit(f"{path} is not a readable CSV: {exc}")
+
+    if frame.empty:
+        raise SystemExit(f"{path} has no rows. Re-run `bias-audit audit` to regenerate it.")
+
+    missing = [c for c in REQUIRED_RESULT_COLUMNS if c not in frame.columns]
+    if missing:
+        raise SystemExit(
+            f"{path} is missing the columns {missing}. Expected a table written by "
+            f"`bias-audit audit` with: {', '.join(RESULT_COLUMNS)}"
+        )
+
     if "note" not in frame.columns:
         frame["note"] = ""
-    frame["note"] = frame["note"].fillna("")
+    frame["note"] = frame["note"].fillna("").astype(str)
     return frame
 
 
@@ -150,8 +171,14 @@ def _run_audit_command(args: argparse.Namespace, config: AuditConfig) -> int:
     grid = list(np.logspace(-3, 2, 12)) if args.tradeoff else None
     try:
         run = run_audit(config=config, tradeoff_grid=grid)
-    except RuntimeError as exc:
+    except (RuntimeError, DataError) as exc:
         print(str(exc), file=sys.stderr)
+        return 2
+    except FileNotFoundError as exc:
+        print(f"Missing input file: {exc}", file=sys.stderr)
+        return 2
+    except PermissionError as exc:
+        print(f"Cannot read the dataset: {exc}", file=sys.stderr)
         return 2
 
     written = write_results(run)
@@ -197,8 +224,17 @@ def _run_figures_command(args: argparse.Namespace, config: AuditConfig) -> int:
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = build_parser().parse_args(argv)
-    config = _config_from_args(args)
-    config.ensure_dirs()
+    try:
+        config = _config_from_args(args).validate()
+    except ConfigError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+
+    try:
+        config.ensure_dirs()
+    except OSError as exc:
+        print(f"Cannot create the output directories: {exc}", file=sys.stderr)
+        return 2
 
     handlers = {
         "audit": _run_audit_command,

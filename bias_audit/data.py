@@ -19,7 +19,7 @@ from sklearn.compose import ColumnTransformer
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
-from .config import DEFAULT_CONFIG, AuditConfig
+from .config import DEFAULT_CONFIG, AuditConfig, DataError
 
 __all__ = ["AdultData", "PreparedData", "load_adult", "prepare_data", "add_age_group"]
 
@@ -89,17 +89,40 @@ def _read_local_csv(path: Path) -> pd.DataFrame:
     Handles both the headerless UCI ``.data`` format and a cached CSV written
     by a previous run.
     """
-    header_probe = pd.read_csv(path, nrows=1, header=None, skipinitialspace=True)
+    try:
+        header_probe = pd.read_csv(path, nrows=1, header=None, skipinitialspace=True, comment="|")
+    except pd.errors.EmptyDataError as exc:
+        raise DataError(f"{path} is empty; delete it and re-run to fetch the dataset again.") from exc
+    except pd.errors.ParserError as exc:
+        raise DataError(f"{path} is not a readable CSV: {exc}") from exc
+    except UnicodeDecodeError as exc:
+        raise DataError(
+            f"{path} is not UTF-8 text - it looks like a binary file (a downloaded .zip?), "
+            "not the extracted `adult.data`."
+        ) from exc
+
+    if header_probe.empty:
+        raise DataError(f"{path} contains no data rows.")
+
     has_header = str(header_probe.iloc[0, 0]).strip().lower() == "age"
-    frame = pd.read_csv(
-        path,
-        header=0 if has_header else None,
-        names=None if has_header else RAW_COLUMNS,
-        skipinitialspace=True,
-        skiprows=0,
-        comment="|",
-    )
+    try:
+        frame = pd.read_csv(
+            path,
+            header=0 if has_header else None,
+            names=None if has_header else RAW_COLUMNS,
+            skipinitialspace=True,
+            skiprows=0,
+            comment="|",
+        )
+    except ValueError as exc:
+        # Raised when a headerless file does not have the 15 UCI columns.
+        raise DataError(
+            f"{path} does not match the UCI Adult layout ({len(RAW_COLUMNS)} columns, no header): {exc}"
+        ) from exc
+
     frame.columns = [str(col).strip() for col in frame.columns]
+    if frame.empty:
+        raise DataError(f"{path} has a header but no data rows.")
     return frame
 
 
@@ -155,13 +178,22 @@ def clean_adult(frame: pd.DataFrame, config: AuditConfig = DEFAULT_CONFIG) -> Ad
 
     working = frame.copy()
     working.columns = [str(col).strip() for col in working.columns]
+    n_input = len(working)
+    if n_input == 0:
+        raise DataError("The input frame has no rows.")
 
     for column in working.columns:
         if working[column].dtype == object:
-            working[column] = working[column].astype(str).str.strip()
-            working[column] = working[column].replace(config.missing_token, np.nan)
+            working[column] = _normalise_text(working[column], config.missing_token)
 
-    income = working["income"].astype(str).str.rstrip(".").str.strip()
+    # Strip the trailing period the published test split appends to its labels,
+    # but keep genuinely missing labels missing: ``astype(str)`` would turn them
+    # into the string ``"nan"``, which survives the ``notna`` filter below and
+    # would silently be scored as ``<=50K``.
+    income = working["income"]
+    if income.dtype == object:
+        income = income.str.rstrip(".").str.strip()
+
     working = working.drop(columns=["income"])
     working = working.drop(columns=[c for c in config.drop_columns if c in working.columns])
 
@@ -174,7 +206,33 @@ def clean_adult(frame: pd.DataFrame, config: AuditConfig = DEFAULT_CONFIG) -> Ad
         if column not in working.columns:
             raise ValueError(f"Protected attribute column {column!r} missing from the dataset")
 
+    if working.empty:
+        raise DataError(
+            f"Every one of the {n_input} rows was dropped: each had a missing value or a "
+            f"missing income label. Check that the file really is the UCI Adult data and "
+            f"that {config.missing_token!r} is the right missing-value token."
+        )
+    if target.nunique() < 2:
+        only = ">50K" if int(target.iloc[0]) == 1 else "<=50K"
+        raise DataError(
+            f"All {len(target)} surviving rows have income {only}; a classifier cannot be "
+            f"trained and no selection rate can be compared. Check "
+            f"positive_income_label={config.positive_income_label!r}."
+        )
+
     return AdultData(features=working, target=target)
+
+
+def _normalise_text(column: pd.Series, missing_token: str) -> pd.Series:
+    """Trim whitespace and map the missing-value token to NaN, preserving NaN.
+
+    ``Series.astype(str)`` renders an existing NaN as the literal string
+    ``"nan"``, which then survives every ``notna`` filter and is one-hot encoded
+    as if it were a real category.
+    """
+    present = column.notna()
+    stripped = column.where(~present, column.astype(str).str.strip())
+    return stripped.mask(present & (stripped == missing_token), other=np.nan)
 
 
 def add_age_group(ages: pd.Series, config: AuditConfig = DEFAULT_CONFIG) -> pd.Series:
@@ -216,10 +274,17 @@ def prepare_data(data: AdultData, config: AuditConfig = DEFAULT_CONFIG) -> Prepa
     dataset (as the notebook did) leaks test-set category frequencies into the
     scaler statistics.
     """
+    config.validate()
+
+    if len(data.features) != len(data.target):
+        raise DataError(
+            f"Features and target disagree on length: {len(data.features)} vs {len(data.target)}"
+        )
+
     protected = pd.DataFrame(
         {
-            "sex": data.features[config.sex_column].astype(str).reset_index(drop=True),
-            "race": data.features[config.race_column].astype(str).reset_index(drop=True),
+            "sex": _normalise_text(data.features[config.sex_column], config.missing_token).reset_index(drop=True),
+            "race": _normalise_text(data.features[config.race_column], config.missing_token).reset_index(drop=True),
             "age": pd.to_numeric(data.features[config.age_column], errors="coerce").reset_index(drop=True),
         }
     )
@@ -227,6 +292,21 @@ def prepare_data(data: AdultData, config: AuditConfig = DEFAULT_CONFIG) -> Prepa
 
     features = data.features.reset_index(drop=True)
     target = data.target.reset_index(drop=True)
+
+    class_counts = target.value_counts()
+    if len(class_counts) < 2:
+        raise DataError(
+            "The target has a single class; there is nothing to classify or to compare "
+            "selection rates against."
+        )
+    # ``train_test_split`` needs at least one row of each class on both sides.
+    smallest = int(class_counts.min())
+    min_rows = int(np.ceil(1 / min(config.test_size, 1 - config.test_size)))
+    if smallest < 2 or smallest < min_rows:
+        raise DataError(
+            f"The rarer class has only {smallest} rows, too few for a stratified "
+            f"{1 - config.test_size:.0%}/{config.test_size:.0%} split (needs at least {max(2, min_rows)})."
+        )
 
     indices = np.arange(len(features))
     train_idx, test_idx = train_test_split(
